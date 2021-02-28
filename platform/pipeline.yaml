@@ -1,0 +1,73 @@
+name: $(Build.Reason)-$(SourceBranchName)-$(Date:yyyyMMdd)-$(Rev:.r)
+
+trigger:
+- main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+- group: vg-terraform-platform
+- name: terraformVersion
+  value: 0.14.7
+- name: workingDirectory
+  value: '$(System.DefaultWorkingDirectory)/platform'
+  
+
+steps:
+
+- task: CmdLine@2
+  displayName: 'Install'
+  inputs:
+    script: |
+      apt-get install unzip
+      wget https://releases.hashicorp.com/terraform/$(terraformVersion)/terraform_$(terraformVersion)_linux_amd64.zip
+      unzip terraform_$(terraformVersion)_linux_amd64.zip
+      mv terraform /usr/local/bin/
+      terraform --version
+
+- task: CmdLine@2
+  displayName: 'Init'
+  inputs:
+    script: 'terraform init -backend-config="storage_account_name=$(backendConfigStorageAccountName)" -backend-config="container_name=$(backendConfigContainerName)" -backend-config="key=$(backendConfigKey)" -backend-config="access_key=$(backendAccessKey)"'
+    workingDirectory: $(workingDirectory)
+
+- task: CmdLine@2
+  displayName: 'Plan'
+  inputs:
+    script: terraform plan
+    workingDirectory: $(workingDirectory)
+
+- task: PowerShell@2
+  displayName: 'Comment PR'
+  condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'))
+  inputs:
+    targetType: 'inline'
+    script: |
+      # Write-Host "PR ID = $env:SYSTEM_PULLREQUEST_PULLREQUESTID"
+      $pullRequestId = $env:SYSTEM_PULLREQUEST_PULLREQUESTID
+      
+      # Write-Host "REPO ID = $env:BUILD_REPOSITORY_ID"
+      $repositoryId = $env:BUILD_REPOSITORY_ID
+
+      # Write-Host "System.TeamProject = $env:SYSTEM_TEAMPROJECT"
+      $projectName = $env:SYSTEM_TEAMPROJECT
+
+      # Write-Output "System.CollectionUri is $env:SYSTEM_COLLECTIONURI"
+      $organizationUri = $env:SYSTEM_COLLECTIONURI
+
+      # Write-Output "Build.BuildId	is $env:BUILD_BUILDID"
+      $buildId = $env:BUILD_BUILDID
+
+      $terraformPlanCommand = "terraform plan -no-color"    
+      # Write-Output "Plan command is '$terraformPlanCommand'"
+
+      & ./New-AdoTfPlanPullRequestComment.ps1 -OrganizationUri $organizationUri -Project $projectName -PersonAccessToken "$(adoCommentPersonalAccessToken)" -RepositoryId $repositoryId -PullRequestId $pullRequestId -BuildId $buildId -TerraformPlanCommand $terraformPlanCommand
+    workingDirectory: '$(workingDirectory)'
+
+- task: CmdLine@2
+  displayName: 'Apply'
+  condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
+  inputs:
+    script: terraform apply -auto-approve
+    workingDirectory: $(workingDirectory)
